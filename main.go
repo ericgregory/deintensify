@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+//	"reflect"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -16,12 +17,17 @@ func main() {
 	config := ctrl.GetConfigOrDie()
 	dynamic := dynamic.NewForConfigOrDie(config)
 	namespace := "default"
+
 	items, err := GetResourcesDynamically(dynamic, ctx, "infrastructure.cluster.x-k8s.io", "v1beta1", "gcpclusters", namespace)
+// Example using configMaps...	items, err := GetResourcesDynamically(dynamic, ctx, "", "v1", "configmaps", namespace)
 	if err != nil {
 		fmt.Println(err)
 	} else {
 		for _, item := range items {
-			fmt.Printf("%+v\n", item)
+			// fmt.Printf("%+v\n", item)
+			fmt.Println(item.GetName())
+			region, _, _ := unstructured.NestedString(item.Object, "spec", "region")
+			fmt.Println(region)
 		}
 	}
 }
