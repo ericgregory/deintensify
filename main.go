@@ -20,7 +20,6 @@ type GCPRegion struct {
 func main() {
 
 	// For the sake of time, hard-coding GCP's grid carbon intensity (gCO2eq/kWh) by region. 
-	// This data from Google is the data Cloud Carbon Footprint uses.
 
 	gcpregions := []GCPRegion{
 		{"asia-east1", 456}, 
@@ -68,28 +67,90 @@ func main() {
 
 	target := gcpregions[0].name
 	
-	// Here we're setting variables to hold information about our management cluster environment.
+	// Here we're setting variables to hold information about our management cluster environment and resource.
 
 	ctx := context.Background()
 	config := ctrl.GetConfigOrDie()
 	dynamic := dynamic.NewForConfigOrDie(config)
 	namespace := "default"
+	res := schema.GroupVersionResource{Group: "infrastructure.cluster.x-k8s.io", Version: "v1beta1", Resource: "gcpclusters"}
+
+	// Using the GetResourcesDynamically function to get a list of resources that we will loop through.
 
 	items, err := GetResourcesDynamically(dynamic, ctx, "infrastructure.cluster.x-k8s.io", "v1beta1", "gcpclusters", namespace)
-	// Example using configMaps...	items, err := GetResourcesDynamically(dynamic, ctx, "", "v1", "configmaps", namespace)
 	if err != nil {
 		fmt.Println(err)
 	} else {
 		for _, item := range items {
-			// fmt.Printf("%+v\n", item)
-			fmt.Println(item.GetName())
+			// Grab the region of the current resource in the loop
+
 			region, _, _ := unstructured.NestedString(item.Object, "spec", "region")
-			fmt.Println("Changing region from", region, "to", target)
-			// Update the region spec to target
-			unstructured.SetNestedField(item.Object, target, "spec", "region")
+			fmt.Println(item.GetName(), "is on region", region)
+
+			// If the region doesn't match the target, we'll delete this cluster and create a new
+			// version with the same specs in the target region
+
+			if region != target {
+				fmt.Println("Deleting cluster from", region, "and creating new cluster on", target)
+
+				// Grab unique fields from current worker cluster
+
+				genname, _, _ := unstructured.NestedString(item.Object, "metadata", "generateName")
+				network, _, _ := unstructured.NestedString(item.Object, "spec", "network", "name")
+				project, _, _ := unstructured.NestedString(item.Object, "spec", "project")
+
+				// Here we're defining the GCPCluster object
+
+				desired := &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+						"kind":       "GCPCluster",
+						"metadata": map[string]interface{}{
+							"namespace":    namespace,
+							"generateName": genname,
+						},
+						"spec": map[string]interface{}{
+							"network": map[string]interface{}{
+								"name": network,
+							},
+						"project": project,
+						"region": target,
+						},
+					},
+				}
+
+				// Create new cluster with same values in target region
+
+				created, err := dynamic.
+					Resource(res).
+					Namespace(namespace).
+					Create(ctx, desired, metav1.CreateOptions{})
+				if err != nil {
+					panic(err.Error())
+				}
+				fmt.Println(created.GetName(), "created") 
+
+				// Delete old cluster
+
+				err = dynamic.
+					Resource(res).
+					Namespace(namespace).
+					Delete(
+						ctx,
+						item.GetName(),
+						metav1.DeleteOptions{},
+					)
+				if err != nil {
+					panic(err.Error())
+				} else {
+					fmt.Println(item.GetName(), "deleted")
+				}
+
+			}	
 		}
 	}
 }
+
 
 // Since we're using Cluster API's custom resources for clusters (in this case the GCPCluster resource), 
 // we're interacting with the resource dynamically/generically rather than through typed/pre-defined interfaces.
@@ -111,3 +172,4 @@ func GetResourcesDynamically(dynamic dynamic.Interface, ctx context.Context, gro
 
 	return list.Items, nil
 }
+

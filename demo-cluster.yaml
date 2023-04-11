@@ -1,0 +1,17 @@
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPCluster
+metadata:
+  generateName: demo-
+  namespace: default
+spec:
+  network:
+    name: default
+  project: inner-lightning-380015
+  region: us-south1
+
+
+
+
+
+
+
