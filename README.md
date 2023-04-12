@@ -11,6 +11,6 @@ To run deintensify, you will need...
 - [Go](https://go.dev/) v1.20.1 or higher
 - [Cloud Carbon Footprint](https://www.cloudcarbonfootprint.org/docs/getting-started) running locally on default ports (recommend mocked data)
 
-Before running, create some arbitrary gcpcluster resources with the included cluster-demo.yaml:
+Before running, create some arbitrary gcpcluster resources with the included demo-cluster.yaml:
 
     % kubectl create -f demo-cluster.yaml
