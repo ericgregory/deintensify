@@ -4,7 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
-
+	"encoding/json"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"time"
+	
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -12,16 +17,49 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-type GCPRegion struct {
-	name string
-	intensity int
+// Defining a struct to hold data from the Cloud Carbon Footprint API
+
+type CCFRegion struct {
+	Name      string  `json:"region"`
+	Intensity float64 `json:"mtPerKwHour"`
+}
+
+// Logic to sort our structs according to emissions data later
+
+type By func(p1, p2 *CCFRegion) bool
+
+func (by By) Sort(GCPregions []CCFRegion) {
+	ps := &regionSorter{
+		GCPregions: GCPregions,
+		by:      by, 
+	}
+	sort.Sort(ps)
+}
+
+type regionSorter struct {
+	GCPregions []CCFRegion
+	by      func(p1, p2 *CCFRegion) bool 
+}
+
+func (s *regionSorter) Len() int {
+	return len(s.GCPregions)
+}
+
+func (s *regionSorter) Swap(i, j int) {
+	s.GCPregions[i], s.GCPregions[j] = s.GCPregions[j], s.GCPregions[i]
+}
+
+func (s *regionSorter) Less(i, j int) bool {
+	return s.by(&s.GCPregions[i], &s.GCPregions[j])
 }
 
 func main() {
 
-	// For the sake of time, hard-coding GCP's grid carbon intensity (gCO2eq/kWh) by region. 
-
-	gcpregions := []GCPRegion{
+	/* If you want to skip using the Cloud Carbon Footprint API, uncomment this to use hard-coded values 
+	for GCP's grid carbon intensity (gCO2eq/kWh) by region from Google. Comment out the sections below on 
+	"Grabbing emissions data..." and "Creating region structs from the JSON..." 
+	
+	GCPregions := []CCFRegion{
 		{"asia-east1", 456}, 
 		{"asia-east2", 360}, 
 		{"asia-northeast1", 464}, 
@@ -57,15 +95,59 @@ func main() {
 		{"us-west3", 448},
 		{"us-west4", 365}}
 	
+	*/
+	
+	// Grabbing emissions data from the Cloud Carbon Footprint API, running locally
+
+	url := "http://localhost:4000/emissions"
+
+	ccfClient := http.Client{
+		Timeout: time.Second * 2, // Timeout after 2 seconds
+	}
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	req.Header.Set("User-Agent", "deintensify-sample")
+
+	res, getErr := ccfClient.Do(req)
+	if getErr != nil {
+		log.Fatal(getErr)
+	}
+
+	if res.Body != nil {
+		defer res.Body.Close()
+	}
+
+	body, readErr := ioutil.ReadAll(res.Body)
+	if readErr != nil {
+		log.Fatal(readErr)
+	}
+
+	// Creating region structs with the JSON from the API
+
+	var GCPregions = []CCFRegion{}
+	jsonErr := json.Unmarshal(body, &GCPregions)
+	if jsonErr != nil {
+		log.Fatal(jsonErr)
+	}
+	
 	// Sorting the regions by intensity, from lowest to highest.
 	
-	sort.SliceStable(gcpregions, func(i, j int) bool {
-		return gcpregions[i].intensity < gcpregions[j].intensity
-	})
-	
-	// Capturing the least-intensity target region in the target variable.
+	carbonintensity := func(p1, p2 *CCFRegion) bool {
+		return p1.Intensity < p2.Intensity
+	}
 
-	target := gcpregions[0].name
+	By(carbonintensity).Sort(GCPregions)
+	
+	/* Capturing the least-intensity target region in the target variable. Note: Cloud Carbon Footprint is returning region data
+	for multiple providers, so I'm being a little cheeky here and indexing straight to the lowest GCP region. Of course you'd just
+	index to zero for the lowest overall value.
+	*/
+
+	target := GCPregions[7].Name
 	
 	// Here we're setting variables to hold information about our management cluster environment and resource.
 
@@ -73,7 +155,7 @@ func main() {
 	config := ctrl.GetConfigOrDie()
 	dynamic := dynamic.NewForConfigOrDie(config)
 	namespace := "default"
-	res := schema.GroupVersionResource{Group: "infrastructure.cluster.x-k8s.io", Version: "v1beta1", Resource: "gcpclusters"}
+	resourceId := schema.GroupVersionResource{Group: "infrastructure.cluster.x-k8s.io", Version: "v1beta1", Resource: "gcpclusters"}
 
 	// Using the GetResourcesDynamically function to get a list of resources that we will loop through.
 
@@ -82,13 +164,15 @@ func main() {
 		fmt.Println(err)
 	} else {
 		for _, item := range items {
+
 			// Grab the region of the current resource in the loop
 
 			region, _, _ := unstructured.NestedString(item.Object, "spec", "region")
 			fmt.Println(item.GetName(), "is on region", region)
 
-			// If the region doesn't match the target, we'll delete this cluster and create a new
-			// version with the same specs in the target region
+			/* If the region doesn't match the target, we'll delete this cluster and create a new
+			   version with the same specs in the target region
+			*/
 
 			if region != target {
 				fmt.Println("Deleting cluster from", region, "and creating new cluster on", target)
@@ -122,7 +206,7 @@ func main() {
 				// Create new cluster with same values in target region
 
 				created, err := dynamic.
-					Resource(res).
+					Resource(resourceId).
 					Namespace(namespace).
 					Create(ctx, desired, metav1.CreateOptions{})
 				if err != nil {
@@ -133,7 +217,7 @@ func main() {
 				// Delete old cluster
 
 				err = dynamic.
-					Resource(res).
+					Resource(resourceId).
 					Namespace(namespace).
 					Delete(
 						ctx,
