@@ -1,4 +1,4 @@
-#deintensify
+# deintensify
 
 This is a simple sample app intended to demonstrate how you can build on existing open source projects to create emissions-aware Kubernetes infrastructure.  
 
